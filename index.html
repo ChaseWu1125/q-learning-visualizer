@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Q-Learning GridWorld｜強化學習迷宮尋路模擬器</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap');
+    body {
+      font-family: 'Inter', 'Noto Sans TC', sans-serif;
+      background-color: #0b1120;
+      color: #f1f5f9;
+      user-select: none;
+    }
+    .panel {
+      background: rgba(30, 41, 59, 0.75);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    input[type="range"] {
+      accent-color: #38bdf8;
+    }
+    .grid-cell {
+      transition: background-color 0.15s ease, transform 0.1s ease;
+    }
+    .grid-cell:hover {
+      filter: brightness(1.2);
+    }
+    .agent-dot {
+      box-shadow: 0 0 14px #38bdf8, 0 0 28px #0284c7;
+    }
+    .trace-cell {
+      box-shadow: inset 0 0 0 2px #34d399;
+    }
+  </style>
+</head>
+<body class="min-h-screen p-4 md:p-6">
+  <div class="max-w-7xl mx-auto space-y-5">
+
+    <!-- Header -->
+    <header class="panel rounded-2xl p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+      <div>
+        <div class="flex items-center gap-2 text-sky-400 text-xs font-bold tracking-widest uppercase">
+          <span>🤖 Reinforcement Learning Interactive Lab</span>
+        </div>
+        <h1 class="text-2xl md:text-3xl font-bold mt-1 text-white">Q-Learning 強化學習迷宮尋路模擬器</h1>
+        <p class="text-slate-400 text-sm mt-1">即時互動編輯地形、調整貝爾曼超參數，觀察 Q-Table 熱力圖與最佳策略 (Optimal Policy) 收斂過程</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-xs text-slate-400 mr-1">載入預設場景：</span>
+        <button onclick="loadPreset('classic')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-sky-600/30 border border-slate-600 text-xs font-medium transition">🧩 經典迷宮</button>
+        <button onclick="loadPreset('cliff')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-sky-600/30 border border-slate-600 text-xs font-medium transition">🌋 懸崖尋路 (Cliff Walking)</button>
+        <button onclick="loadPreset('twin')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-sky-600/30 border border-slate-600 text-xs font-medium transition">⚖️ 雙路徑陷阱</button>
+        <button onclick="loadPreset('empty')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-600/30 border border-slate-600 text-xs font-medium transition">🧹 清空牆壁</button>
+      </div>
+    </header>
+
+    <!-- Top Metrics Bar -->
+    <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="panel rounded-xl p-4">
+        <div class="text-slate-400 text-xs">訓練回合數 (Episodes)</div>
+        <div id="statEpisode" class="text-2xl md:text-3xl font-bold text-white mt-1">0</div>
+        <div id="statStatus" class="text-xs text-sky-400 mt-1">待機中 - 點擊開始訓練</div>
+      </div>
+      <div class="panel rounded-xl p-4">
+        <div class="text-slate-400 text-xs">當前探索率 (Epsilon ε)</div>
+        <div id="statEpsilon" class="text-2xl md:text-3xl font-bold text-amber-400 mt-1">0.25</div>
+        <div class="text-xs text-slate-400 mt-1">隨機探索 vs 經驗利用</div>
+      </div>
+      <div class="panel rounded-xl p-4">
+        <div class="text-slate-400 text-xs">近 30 回合平均獎勵</div>
+        <div id="statAvgReward" class="text-2xl md:text-3xl font-bold text-emerald-400 mt-1">0.0</div>
+        <div id="statLastSteps" class="text-xs text-slate-400 mt-1">上回合步數：0 步</div>
+      </div>
+      <div class="panel rounded-xl p-4">
+        <div class="text-slate-400 text-xs">近 30 回合抵達終點率</div>
+        <div id="statSuccessRate" class="text-2xl md:text-3xl font-bold text-purple-400 mt-1">0%</div>
+        <div class="text-xs text-slate-400 mt-1">收斂穩定度指標</div>
+      </div>
+    </section>
+
+    <!-- Main Content Grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+      <!-- Left Column: Interactive GridWorld (7 cols) -->
+      <div class="lg:col-span-7 panel rounded-2xl p-5 flex flex-col justify-between space-y-4">
+        
+        <!-- Map Editor Toolbar -->
+        <div class="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-700/70">
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span class="text-xs text-slate-400 mr-1">地形筆刷 (點擊或拖曳)：</span>
+            <button id="tool-wall" onclick="setTool('wall')" class="tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-sky-600 text-white border border-sky-400">🧱 牆壁</button>
+            <button id="tool-trap" onclick="setTool('trap')" class="tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700">🔥 陷阱 (-50)</button>
+            <button id="tool-start" onclick="setTool('start')" class="tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700">🟢 起點</button>
+            <button id="tool-goal" onclick="setTool('goal')" class="tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700">🏁 終點 (+100)</button>
+            <button id="tool-empty" onclick="setTool('empty')" class="tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700">🧹 清除</button>
+          </div>
+          <label class="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+            <input type="checkbox" id="toggleQText" checked onchange="renderGrid()" class="rounded bg-slate-800 border-slate-600 text-sky-500">
+            顯示 Q 值與策略箭頭
+          </label>
+        </div>
+
+        <!-- The 8x8 Grid Container -->
+        <div class="flex justify-center items-center py-2">
+          <div id="gridContainer" class="grid grid-cols-8 gap-1.5 bg-slate-900/90 p-3 rounded-2xl border border-slate-800 w-full max-w-[520px] aspect-square">
+            <!-- JS Dynamically Populates 64 Cells -->
+          </div>
+        </div>
+
+        <!-- Legend & Formula Footer -->
+        <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-700/70 text-xs text-slate-400">
+          <div class="flex items-center gap-4">
+            <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-sky-400 inline-block"></span> Agent 當前位置</span>
+            <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-emerald-500/40 border border-emerald-400 inline-block"></span> 正向價值區 (High Q)</span>
+            <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-rose-500/40 border border-rose-400 inline-block"></span> 負向風險區 (Low Q)</span>
+          </div>
+          <div class="font-mono text-[11px] text-slate-400">
+            Q(s,a) ← Q(s,a) + α·[r + γ·max Q(s',a') - Q(s,a)]
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Controls, Hyperparameters & Live Chart (5 cols) -->
+      <div class="lg:col-span-5 space-y-5">
+
+        <!-- Simulation Control Panel -->
+        <div class="panel rounded-2xl p-5 space-y-4">
+          <h2 class="text-base font-bold text-white flex items-center justify-between">
+            <span>🎮 訓練與模擬控制</span>
+            <span id="episodeStepInfo" class="text-xs font-normal text-slate-400">當前步數: 0</span>
+          </h2>
+
+          <div class="grid grid-cols-2 gap-2.5">
+            <button id="btnPlayPause" onclick="toggleTraining()" class="col-span-2 py-2.5 px-4 rounded-xl font-bold text-sm bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/30 transition flex items-center justify-center gap-2">
+              <span>▶ 開始自動訓練 (Start Training)</span>
+            </button>
+            <button onclick="stepOnce()" class="py-2 px-3 rounded-xl font-medium text-xs bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 transition">
+              ⏭ 單步執行 (1 Step)
+            </button>
+            <button onclick="trainFast(100)" class="py-2 px-3 rounded-xl font-medium text-xs bg-sky-600/20 hover:bg-sky-600/30 border border-sky-500/40 text-sky-300 transition">
+              ⚡ 快速訓練 +100 回合
+            </button>
+            <button onclick="runGreedyDemo()" class="py-2 px-3 rounded-xl font-medium text-xs bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 transition">
+              🏃 測試最佳路徑 (Greedy)
+            </button>
+            <button onclick="resetQTable()" class="py-2 px-3 rounded-xl font-medium text-xs bg-rose-950/60 hover:bg-rose-900/70 border border-rose-700/50 text-rose-300 transition">
+              ↺ 重置 Q-Table 記憶
+            </button>
+          </div>
+        </div>
+
+        <!-- Hyperparameters Sliders -->
+        <div class="panel rounded-2xl p-5 space-y-3.5">
+          <h2 class="text-base font-bold text-white">⚙️ 超參數即時調整 (Hyperparameters)</h2>
+
+          <div>
+            <div class="flex justify-between text-xs mb-1">
+              <span class="text-slate-300">學習率 Learning Rate (α)</span>
+              <span id="valAlpha" class="font-mono font-bold text-sky-400">0.25</span>
+            </div>
+            <input id="sliderAlpha" type="range" min="0.05" max="1.0" step="0.05" value="0.25" class="w-full" oninput="updateHyperparams()">
+          </div>
+
+          <div>
+            <div class="flex justify-between text-xs mb-1">
+              <span class="text-slate-300">折扣因子 Discount Factor (γ)</span>
+              <span id="valGamma" class="font-mono font-bold text-sky-400">0.90</span>
+            </div>
+            <input id="sliderGamma" type="range" min="0.10" max="0.99" step="0.01" value="0.90" class="w-full" oninput="updateHyperparams()">
+          </div>
+
+          <div>
+            <div class="flex justify-between text-xs mb-1">
+              <span class="text-slate-300">探索率 Exploration Rate (ε)</span>
+              <span id="valEpsilon" class="font-mono font-bold text-amber-400">0.25</span>
+            </div>
+            <input id="sliderEpsilon" type="range" min="0.00" max="1.00" step="0.01" value="0.25" class="w-full" oninput="updateHyperparams()">
+            <label class="flex items-center gap-2 text-xs text-slate-400 mt-1 cursor-pointer">
+              <input type="checkbox" id="chkDecay" checked class="rounded bg-slate-800 border-slate-600 text-sky-500">
+              啟用 ε-Decay（每回合自動微幅降低探索率至 0.02）
+            </label>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3 pt-1">
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-slate-300">每步消耗懲罰</span>
+                <span id="valStepPenalty" class="font-mono font-bold text-rose-400">-1.0</span>
+              </div>
+              <input id="sliderStepPenalty" type="range" min="-5.0" max="-0.2" step="0.2" value="-1.0" class="w-full" oninput="updateHyperparams()">
+            </div>
+            <div>
+              <div class="flex justify-between text-xs mb-1">
+                <span class="text-slate-300">動畫速度 (FPS)</span>
+                <span id="valSpeed" class="font-mono font-bold text-emerald-400">30</span>
+              </div>
+              <input id="sliderSpeed" type="range" min="2" max="60" step="2" value="30" class="w-full" oninput="updateSpeed()">
+            </div>
+          </div>
+        </div>
+
+        <!-- Reward Convergence Chart -->
+        <div class="panel rounded-2xl p-5 space-y-2">
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm font-bold text-white">📈 獎勵收斂曲線 (Episode Reward & MA-20)</h2>
+            <span class="text-[11px] text-slate-400">最近 100 回合</span>
+          </div>
+          <canvas id="rewardChart" width="420" height="150" class="w-full h-36 bg-slate-900/80 rounded-xl border border-slate-800"></canvas>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // === 1. 系統常數與全域狀態 ===
+    const GRID_SIZE = 8;
+    const ACTIONS = [
+      { dr: -1, dc: 0, arrow: '↑' }, // 0: Up
+      { dr: 1,  dc: 0, arrow: '↓' }, // 1: Down
+      { dr: 0,  dc: -1, arrow: '←' }, // 2: Left
+      { dr: 0,  dc: 1, arrow: '→' }  // 3: Right
+    ];
+
+    let grid = [];        // 'empty', 'wall', 'trap', 'start', 'goal'
+    let qTable = [];      // [r][c][action]
+    let startPos = { r: 0, c: 0 };
+    let goalPos = { r: 7, c: 7 };
+    let agentPos = { r: 0, c: 0 };
+    let greedyTrace = []; // 儲存測試路徑座標
+
+    // 超參數與統計數據
+    let alpha = 0.25;
+    let gamma = 0.90;
+    let epsilon = 0.25;
+    let stepPenalty = -1.0;
+    let speedFPS = 30;
+
+    let episodeCount = 0;
+    let currentSteps = 0;
+    let currentEpReward = 0;
+    let rewardHistory = [];
+    let successHistory = [];
+
+    let isRunning = false;
+    let timerId = null;
+    let currentTool = 'wall';
+    let isMouseDown = false;
+
+    // === 2. 初始化網格與 Q-Table ===
+    function initSystem() {
+      grid = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill('empty'));
+      initQTable();
+      loadPreset('classic');
+      window.addEventListener('mouseup', () => { isMouseDown = false; });
+    }
+
+    function initQTable() {
+      qTable = Array.from({ length: GRID_SIZE }, () =>
+        Array.from({ length: GRID_SIZE }, () => [0, 0, 0, 0])
+      );
+      episodeCount = 0;
+      currentSteps = 0;
+      currentEpReward = 0;
+      rewardHistory = [];
+      successHistory = [];
+      greedyTrace = [];
+      agentPos = { ...startPos };
+      updateMetricsUI();
+      drawChart();
+    }
+
+    // === 3. 預設地圖載入 ===
+    function loadPreset(type) {
+      stopTraining();
+      grid = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill('empty'));
+
+      if (type === 'classic') {
+        startPos = { r: 0, c: 0 };
+        goalPos = { r: 7, c: 7 };
+        const walls = [[1,1],[1,2],[1,5],[2,5],[3,1],[3,2],[3,3],[4,5],[5,1],[5,3],[5,5],[6,3]];
+        const traps = [[2,3],[4,2],[6,5],[3,6]];
+        walls.forEach(([r, c]) => grid[r][c] = 'wall');
+        traps.forEach(([r, c]) => grid[r][c] = 'trap');
+      } else if (type === 'cliff') {
+        startPos = { r: 7, c: 0 };
+        goalPos = { r: 7, c: 7 };
+        for (let c = 1; c <= 6; c++) grid[7][c] = 'trap';
+        grid[5][2] = 'wall';
+        grid[5][5] = 'wall';
+      } else if (type === 'twin') {
+        startPos = { r: 3, c: 0 };
+        goalPos = { r: 3, c: 7 };
+        const walls = [[1,2],[2,2],[4,2],[5,2],[3,4],[2,4],[4,4]];
+        const traps = [[3,2],[3,3],[1,5],[5,5]];
+        walls.forEach(([r, c]) => grid[r][c] = 'wall');
+        traps.forEach(([r, c]) => grid[r][c] = 'trap');
+      } else {
+        startPos = { r: 0, c: 0 };
+        goalPos = { r: 7, c: 7 };
+      }
+
+      grid[startPos.r][startPos.c] = 'start';
+      grid[goalPos.r][goalPos.c] = 'goal';
+      initQTable();
+      renderGrid();
+    }
+
+    // === 4. 地圖編輯器互動 ===
+    function setTool(tool) {
+      currentTool = tool;
+      document.querySelectorAll('.tool-btn').forEach(btn => {
+        btn.className = 'tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700';
+      });
+      const activeBtn = document.getElementById(`tool-${tool}`);
+      if (activeBtn) {
+        activeBtn.className = 'tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium bg-sky-600 text-white border border-sky-400';
+      }
+    }
+
+    function applyToolToCell(r, c) {
+      greedyTrace = [];
+      if (currentTool === 'start') {
+        if (r === goalPos.r && c === goalPos.c) return;
+        grid[startPos.r][startPos.c] = 'empty';
+        startPos = { r, c };
+        grid[r][c] = 'start';
+        agentPos = { ...startPos };
+      } else if (currentTool === 'goal') {
+        if (r === startPos.r && c === startPos.c) return;
+        grid[goalPos.r][goalPos.c] = 'empty';
+        goalPos = { r, c };
+        grid[r][c] = 'goal';
+      } else {
+        if ((r === startPos.r && c === startPos.c) || (r === goalPos.r && c === goalPos.c)) return;
+        grid[r][c] = currentTool;
+        if (currentTool === 'wall') qTable[r][c] = [0, 0, 0, 0];
+      }
+      renderGrid();
+    }
+
+    // === 5. Q-Learning 核心演算法 ===
+    function chooseAction(r, c, useGreedy = false) {
+      if (!useGreedy && Math.random() < epsilon) {
+        return Math.floor(Math.random() * 4);
+      }
+      const qVals = qTable[r][c];
+      const maxQ = Math.max(...qVals);
+      const bestActions = [];
+      qVals.forEach((val, idx) => {
+        if (Math.abs(val - maxQ) < 1e-6) bestActions.push(idx);
+      });
+      return bestActions[Math.floor(Math.random() * bestActions.length)];
+    }
+
+    function stepSimulation() {
+      greedyTrace = [];
+      const { r, c } = agentPos;
+      const actionIdx = chooseAction(r, c, false);
+      const move = ACTIONS[actionIdx];
+
+      let nr = r + move.dr;
+      let nc = c + move.dc;
+      let reward = stepPenalty;
+      let done = false;
+      let reachedGoal = false;
+
+      // 邊界或撞牆檢查
+      if (nr < 0 || nr >= GRID_SIZE || nc < 0 || nc >= GRID_SIZE || grid[nr][nc] === 'wall') {
+        nr = r;
+        nc = c;
+        reward = stepPenalty * 2;
+      } else if (grid[nr][nc] === 'trap') {
+        reward = -50;
+        done = true;
+      } else if (grid[nr][nc] === 'goal') {
+        reward = 100;
+        done = true;
+        reachedGoal = true;
+      }
+
+      // Bellman Update: Q(s,a) <- Q(s,a) + alpha * (r + gamma * maxQ(s') - Q(s,a))
+      const currentQ = qTable[r][c][actionIdx];
+      const maxNextQ = done ? 0 : Math.max(...qTable[nr][nc]);
+      qTable[r][c][actionIdx] = currentQ + alpha * (reward + gamma * maxNextQ - currentQ);
+
+      agentPos = { r: nr, c: nc };
+      currentSteps++;
+      currentEpReward += reward;
+
+      // 回合結束或超過最大步數限制 (100步)
+      if (done || currentSteps >= 100) {
+        episodeCount++;
+        rewardHistory.push(currentEpReward);
+        if (rewardHistory.length > 100) rewardHistory.shift();
+
+        successHistory.push(reachedGoal ? 1 : 0);
+        if (successHistory.length > 30) successHistory.shift();
+
+        document.getElementById('statLastSteps').textContent = `上回合步數：${currentSteps} 步`;
+
+        // Epsilon Decay
+        if (document.getElementById('chkDecay').checked && epsilon > 0.02) {
+          epsilon = Math.max(0.02, epsilon * 0.985);
+          document.getElementById('sliderEpsilon').value = epsilon.toFixed(2);
+          document.getElementById('valEpsilon').textContent = epsilon.toFixed(2);
+        }
+
+        agentPos = { ...startPos };
+        currentSteps = 0;
+        currentEpReward = 0;
+        drawChart();
+      }
+
+      document.getElementById('episodeStepInfo').textContent = `當前步數: ${currentSteps}`;
+      updateMetricsUI();
+    }
+
+    // === 6. 訓練控制與快速模擬 ===
+    function toggleTraining() {
+      if (isRunning) {
+        stopTraining();
+      } else {
+        isRunning = true;
+        const btn = document.getElementById('btnPlayPause');
+        btn.innerHTML = '<span>⏸ 暫停訓練 (Pause Training)</span>';
+        btn.className = 'col-span-2 py-2.5 px-4 rounded-xl font-bold text-sm bg-amber-600 hover:bg-amber-500 text-white shadow-lg transition flex items-center justify-center gap-2';
+        document.getElementById('statStatus').textContent = '訓練進行中...';
+        startLoop();
+      }
+    }
+
+    function stopTraining() {
+      isRunning = false;
+      if (timerId) clearInterval(timerId);
+      timerId = null;
+      const btn = document.getElementById('btnPlayPause');
+      if (btn) {
+        btn.innerHTML = '<span>▶ 開始自動訓練 (Start Training)</span>';
+        btn.className = 'col-span-2 py-2.5 px-4 rounded-xl font-bold text-sm bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/30 transition flex items-center justify-center gap-2';
+      }
+      document.getElementById('statStatus').textContent = '已暫停 / 待機中';
+    }
+
+    function startLoop() {
+      if (timerId) clearInterval(timerId);
+      const interval = Math.max(16, Math.floor(1000 / speedFPS));
+      timerId = setInterval(() => {
+        stepSimulation();
+        renderGrid();
+      }, interval);
+    }
+
+    function stepOnce() {
+      stopTraining();
+      stepSimulation();
+      renderGrid();
+    }
+
+    function trainFast(episodesToRun) {
+      stopTraining();
+      const targetEp = episodeCount + episodesToRun;
+      let safetyCounter = 0;
+      while (episodeCount < targetEp && safetyCounter < 15000) {
+        stepSimulation();
+        safetyCounter++;
+      }
+      document.getElementById('statStatus').textContent = `已完成 +${episodesToRun} 回合快速訓練`;
+      renderGrid();
+      drawChart();
+    }
+
+    function runGreedyDemo() {
+      stopTraining();
+      greedyTrace = [];
+      let curr = { ...startPos };
+      greedyTrace.push(`${curr.r},${curr.c}`);
+
+      for (let step = 0; step < 35; step++) {
+        if (curr.r === goalPos.r && curr.c === goalPos.c) break;
+        const aIdx = chooseAction(curr.r, curr.c, true);
+        const move = ACTIONS[aIdx];
+        const nr = curr.r + move.dr;
+        const nc = curr.c + move.dc;
+        if (nr < 0 || nr >= GRID_SIZE || nc < 0 || nc >= GRID_SIZE || grid[nr][nc] === 'wall') break;
+        curr = { r: nr, c: nc };
+        greedyTrace.push(`${curr.r},${curr.c}`);
+        if (grid[curr.r][curr.c] === 'trap') break;
+      }
+      agentPos = { ...curr };
+      document.getElementById('statStatus').textContent = '已顯示當前最佳 Greedy 路徑軌跡';
+      renderGrid();
+    }
+
+    function resetQTable() {
+      stopTraining();
+      initQTable();
+      renderGrid();
+      document.getElementById('statStatus').textContent = 'Q-Table 已重置為 0';
+    }
+
+    // === 7. 超參數同步 ===
+    function updateHyperparams() {
+      alpha = parseFloat(document.getElementById('sliderAlpha').value);
+      gamma = parseFloat(document.getElementById('sliderGamma').value);
+      epsilon = parseFloat(document.getElementById('sliderEpsilon').value);
+      stepPenalty = parseFloat(document.getElementById('sliderStepPenalty').value);
+
+      document.getElementById('valAlpha').textContent = alpha.toFixed(2);
+      document.getElementById('valGamma').textContent = gamma.toFixed(2);
+      document.getElementById('valEpsilon').textContent = epsilon.toFixed(2);
+      document.getElementById('valStepPenalty').textContent = stepPenalty.toFixed(1);
+      updateMetricsUI();
+    }
+
+    function updateSpeed() {
+      speedFPS = parseInt(document.getElementById('sliderSpeed').value, 10);
+      document.getElementById('valSpeed').textContent = speedFPS;
+      if (isRunning) startLoop();
+    }
+
+    function updateMetricsUI() {
+      document.getElementById('statEpisode').textContent = episodeCount;
+      document.getElementById('statEpsilon').textContent = epsilon.toFixed(2);
+
+      if (rewardHistory.length > 0) {
+        const recent = rewardHistory.slice(-30);
+        const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+        document.getElementById('statAvgReward').textContent = avg.toFixed(1);
+      } else {
+        document.getElementById('statAvgReward').textContent = '0.0';
+      }
+
+      if (successHistory.length > 0) {
+        const rate = Math.round((successHistory.reduce((a, b) => a + b, 0) / successHistory.length) * 100);
+        document.getElementById('statSuccessRate').textContent = `${rate}%`;
+      } else {
+        document.getElementById('statSuccessRate').textContent = '0%';
+      }
+    }
+
+    // === 8. 渲染網格與熱力圖 ===
+    function renderGrid() {
+      const container = document.getElementById('gridContainer');
+      const showQ = document.getElementById('toggleQText').checked;
+      container.innerHTML = '';
+
+      for (let r = 0; r < GRID_SIZE; r++) {
+        for (let c = 0; c < GRID_SIZE; c++) {
+          const cellType = grid[r][c];
+          const qVals = qTable[r][c];
+          const maxQ = Math.max(...qVals);
+          const bestActionIdx = qVals.indexOf(maxQ);
+          const hasLearned = qVals.some(v => Math.abs(v) > 0.01);
+
+          const cell = document.createElement('div');
+          cell.className = 'grid-cell relative rounded-xl flex flex-col items-center justify-center p-1 cursor-pointer border border-slate-800/80 overflow-hidden';
+
+          // 滑鼠點擊與拖曳編輯事件
+          cell.onmousedown = (e) => {
+            e.preventDefault();
+            isMouseDown = true;
+            applyToolToCell(r, c);
+          };
+          cell.onmouseenter = () => {
+            if (isMouseDown) applyToolToCell(r, c);
+          };
+
+          // 根據地形與 Q-Value 計算背景色
+          if (cellType === 'wall') {
+            cell.style.backgroundColor = '#334155';
+            cell.innerHTML = '<span class="text-lg">🧱</span>';
+          } else if (cellType === 'trap') {
+            cell.style.backgroundColor = 'rgba(225, 29, 72, 0.35)';
+            cell.innerHTML = '<span class="text-lg">🔥</span><span class="text-[10px] text-rose-300 font-mono">-50</span>';
+          } else if (cellType === 'goal') {
+            cell.style.backgroundColor = 'rgba(16, 185, 129, 0.45)';
+            cell.innerHTML = '<span class="text-lg">🏁</span><span class="text-[10px] text-emerald-200 font-mono">+100</span>';
+          } else {
+            // 一般格子或起點：依 maxQ 渲染紅綠熱力圖
+            if (hasLearned) {
+              if (maxQ > 0) {
+                const intensity = Math.min(1, maxQ / 100);
+                cell.style.backgroundColor = `rgba(16, 185, 129, ${0.12 + intensity * 0.55})`;
+              } else {
+                const intensity = Math.min(1, Math.abs(maxQ) / 50);
+                cell.style.backgroundColor = `rgba(244, 63, 94, ${0.10 + intensity * 0.45})`;
+              }
+            } else {
+              cell.style.backgroundColor = '#1e293b';
+            }
+
+            if (cellType === 'start') {
+              const badge = document.createElement('span');
+              badge.className = 'absolute top-0.5 left-1 text-[9px] font-bold text-emerald-400';
+              badge.textContent = 'START';
+              cell.appendChild(badge);
+            }
+
+            if (showQ && hasLearned) {
+              const arrowSpan = document.createElement('div');
+              arrowSpan.className = 'text-sm md:text-base font-bold text-white leading-none';
+              arrowSpan.textContent = ACTIONS[bestActionIdx].arrow;
+              cell.appendChild(arrowSpan);
+
+              const valSpan = document.createElement('div');
+              valSpan.className = 'text-[10px] font-mono text-slate-200/90 mt-0.5';
+              valSpan.textContent = maxQ.toFixed(1);
+              cell.appendChild(valSpan);
+            }
+          }
+
+          // 若在測試最佳路徑軌跡中，加上高亮邊框
+          if (greedyTrace.includes(`${r},${c}`)) {
+            cell.classList.add('trace-cell');
+          }
+
+          // 繪製當前 Agent 圓點
+          if (agentPos.r === r && agentPos.c === c) {
+            const agent = document.createElement('div');
+            agent.className = 'agent-dot absolute w-5 h-5 md:w-6 md:h-6 rounded-full bg-sky-400 border-2 border-white flex items-center justify-center text-[10px] font-bold text-slate-950 z-10';
+            agent.textContent = 'AI';
+            cell.appendChild(agent);
+          }
+
+          container.appendChild(cell);
+        }
+      }
+    }
+
+    // === 9. 繪製即時收斂曲線 (HTML5 Canvas) ===
+    function drawChart() {
+      const canvas = document.getElementById('rewardChart');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      // 繪製背景格線
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.12)';
+      ctx.lineWidth = 1;
+      for (let i = 1; i < 4; i++) {
+        const y = (h / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+
+      if (rewardHistory.length < 2) {
+        ctx.fillStyle = '#64748b';
+        ctx.font = '12px Inter, sans-serif';
+        ctx.fillText('開始訓練後將即時繪製 Episode Reward 收斂曲線...', 70, h / 2);
+        return;
+      }
+
+      const minR = Math.min(-60, ...rewardHistory);
+      const maxR = Math.max(105, ...rewardHistory);
+      const range = Math.max(10, maxR - minR);
+
+      const getX = (idx) => (idx / (rewardHistory.length - 1)) * (w - 20) + 10;
+      const getY = (val) => h - 12 - ((val - minR) / range) * (h - 24);
+
+      // 繪製單回合 Reward 折線 (半透明藍)
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      rewardHistory.forEach((val, idx) => {
+        const x = getX(idx);
+        const y = getY(val);
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // 繪製 MA-20 移動平均線 (亮翠綠)
+      ctx.strokeStyle = '#34d399';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      rewardHistory.forEach((_, idx) => {
+        const start = Math.max(0, idx - 19);
+        const slice = rewardHistory.slice(start, idx + 1);
+        const avg = slice.reduce((a, b) => a + b, 0) / slice.length;
+        const x = getX(idx);
+        const y = getY(avg);
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    // 啟動系統
+    initSystem();
+  </script>
+</body>
+</html>
